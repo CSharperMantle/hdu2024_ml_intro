@@ -1,61 +1,83 @@
-# 以下代码实现了一个简单的3层 卷积神经网络
-# 代码来源：https://github.com/pytorch/examples/tree/master/mnist
-
-from __future__ import print_function
 import argparse
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
-from torchvision import datasets, transforms    
+from torchvision import datasets, transforms
 from torch.optim.lr_scheduler import StepLR
+from torchsummary import summary
+
+
+class SEBlock(nn.Module):
+    """
+    Squeeze-and-Excitation Networks. https://arxiv.org/abs/1709.01507
+    """
+
+    def __init__(self, h: int, w: int, c: int, r: int):
+        super(SEBlock, self).__init__()
+        self.h, self.w, self.c, self.r = h, w, c, r
+        self.fc1 = nn.Linear(c, c // r)
+        self.fc2 = nn.Linear(c // r, c)
+
+    def forward(self, x: torch.Tensor):
+        k = F.avg_pool2d(x, (self.h, self.w))
+        k = k.permute(0, 2, 3, 1)
+        k = self.fc1(k)
+        k = F.relu(k)
+        k = self.fc2(k)
+        k = F.sigmoid(k)
+        k = k.permute(0, 3, 1, 2)
+        k = F.interpolate(k, (self.h, self.w), mode="nearest")
+        return x * k
 
 
 class Net(nn.Module):
     def __init__(self):
         super(Net, self).__init__()
-        # nn.Conv2d() 参数依次代表： in_channnel, out_channel, kernel_size, stride 
-        # nn.Conv2d() 表示一个卷积层
-        self.conv1 = nn.Conv2d(1, 32, 3, 1)         
+        self.conv1 = nn.Conv2d(1, 32, 3, 1)
         self.conv2 = nn.Conv2d(32, 64, 3, 1)
-        self.conv3 = nn.Conv2d(64, 64, 3, 1)
-
-        # doopout 比较有效的缓解过拟合的发生
+        self.conv3 = nn.Conv2d(64, 128, 3, 1)
+        self.conv4 = nn.Conv2d(128, 128, 3, 1, padding=1, padding_mode="zeros")
+        self.conv5 = nn.Conv2d(128, 128, 3, 1, padding=1, padding_mode="zeros")
+        self.se1 = SEBlock(22, 22, 128, 8)
+        self.conv6 = nn.Conv2d(128, 128, 3, 1, padding=1, padding_mode="zeros")
+        self.se2 = SEBlock(22, 22, 128, 8)
         self.dropout1 = nn.Dropout(0.25)
+        self.fc1 = nn.Linear(128 * (22 // 2) * (22 // 2), 256)
         self.dropout2 = nn.Dropout(0.5)
-
-        # nn.Lineer() 全连接层 ，一般作为输出层，得到分类概率。fc2: 10 表示类别数
-        self.fc1 = nn.Linear(7744, 128)
-        self.fc2 = nn.Linear(128, 10)
+        self.fc2 = nn.Linear(256, 10)
 
     def forward(self, x):
         x = self.conv1(x)
-        x = F.relu(x)               # relu= max(0, x), 是一个非线性激活函数
+        x = F.relu(x)
         x = self.conv2(x)
         x = F.relu(x)
         x = self.conv3(x)
         x = F.relu(x)
-        x = F.max_pool2d(x, 2)      # max_pool2d 最大池化层
+        x = self.conv4(x)
+        x = F.relu(x)
+
+        res = self.conv5(x)
+        res = F.relu(res)
+        res = self.se1(res)
+        x = x + res
+
+        res = self.conv6(x)
+        res = F.relu(res)
+        res = self.se2(res)
+        x = x + res
+
+        x = F.max_pool2d(x, 2)
         x = self.dropout1(x)
-        x = torch.flatten(x, 1)     # torch.flatten(x, start_dim, end_dim) 展平tensor x
-        x = self.fc1(x)             
+        x = torch.flatten(x, 1)
+        x = self.fc1(x)
         x = F.relu(x)
         x = self.dropout2(x)
         x = self.fc2(x)
-        output = F.log_softmax(x, dim=1)        # 这一步计算分类概率
-        return output
+        return F.log_softmax(x, dim=1)
 
 
 def train(args, model, device, train_loader, optimizer, epoch):
-    '''
-    该函数的作用: 训练网络模型
-        args: 参数对象
-        model: 网络模型
-        device: CPU or GPU 
-        train_loader： 加载训练图片
-        optimizer： 优化器
-        epoch：训练次数
-    '''
     model.train()
     for batch_idx, (data, target) in enumerate(train_loader):
         data, target = data.to(device), target.to(device)
@@ -65,92 +87,141 @@ def train(args, model, device, train_loader, optimizer, epoch):
         loss.backward()
         optimizer.step()
         if batch_idx % args.log_interval == 0:
-            print('Train Epoch: {} [{}/{} ({:.0f}%)]\tLoss: {:.6f}'.format(
-                epoch, batch_idx * len(data), len(train_loader.dataset),
-                100. * batch_idx / len(train_loader), loss.item()))
+            print(
+                "Train Epoch: {} [{}/{} ({:.0f}%)]\tLoss: {:.6f}".format(
+                    epoch,
+                    batch_idx * len(data),
+                    len(train_loader.dataset),
+                    100.0 * batch_idx / len(train_loader),
+                    loss.item(),
+                )
+            )
             if args.dry_run:
                 break
 
 
 def test(model, device, test_loader):
-    '''
-    该函数的作用: 测试网络模型
-        args: 参数对象
-        model: 网络模型
-        train_loader：加载测试图片
-    '''
-    model.eval()            # 让 model 进入测试模式，不能省略
+    model.eval()
     test_loss = 0
     correct = 0
-    with torch.no_grad():
+    with torch.inference_mode():
         for data, target in test_loader:
             data, target = data.to(device), target.to(device)
             output = model(data)
-            test_loss += F.nll_loss(output, target, reduction='sum').item()  # sum up batch loss
-            pred = output.argmax(dim=1, keepdim=True)  # get the index of the max log-probability
+            test_loss += F.nll_loss(output, target, reduction="sum").item()
+            pred = output.argmax(dim=1, keepdim=True)
             correct += pred.eq(target.view_as(pred)).sum().item()
 
     test_loss /= len(test_loader.dataset)
 
-    print('\nTest set: Average loss: {:.4f}, Accuracy: {}/{} ({:.0f}%)\n'.format(
-        test_loss, correct, len(test_loader.dataset),
-        100. * correct / len(test_loader.dataset)))
+    print(
+        "\nTest set: Average loss: {:.4f}, Accuracy: {}/{} ({:.0f}%)\n".format(
+            test_loss,
+            correct,
+            len(test_loader.dataset),
+            100.0 * correct / len(test_loader.dataset),
+        )
+    )
 
 
 def main():
-    # Training settings
-    parser = argparse.ArgumentParser(description='PyTorch MNIST Example')
-    parser.add_argument('--batch-size', type=int, default=64, metavar='N',
-                        help='input batch size for training (default: 64)')
-    parser.add_argument('--test-batch-size', type=int, default=1000, metavar='N',
-                        help='input batch size for testing (default: 1000)')
-    parser.add_argument('--epochs', type=int, default=14, metavar='N',
-                        help='number of epochs to train (default: 14)')
-    parser.add_argument('--lr', type=float, default=1.0, metavar='LR',
-                        help='learning rate (default: 1.0)')
-    parser.add_argument('--gamma', type=float, default=0.7, metavar='M',
-                        help='Learning rate step gamma (default: 0.7)')
-    parser.add_argument('--no-cuda', action='store_true', default=True,
-                        help='disables CUDA training')
-    parser.add_argument('--dry-run', action='store_true', default=False,
-                        help='quickly check a single pass')
-    parser.add_argument('--seed', type=int, default=1, metavar='S',
-                        help='random seed (default: 1)')
-    parser.add_argument('--log-interval', type=int, default=10, metavar='N',
-                        help='how many batches to wait before logging training status')
-    parser.add_argument('--save-model', action='store_true', default=False,
-                        help='For Saving the current Model')
+
+    parser = argparse.ArgumentParser(description="PyTorch MNIST Example")
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=64,
+        metavar="N",
+        help="input batch size for training (default: 64)",
+    )
+    parser.add_argument(
+        "--test-batch-size",
+        type=int,
+        default=1000,
+        metavar="N",
+        help="input batch size for testing (default: 1000)",
+    )
+    parser.add_argument(
+        "--epochs",
+        type=int,
+        default=14,
+        metavar="N",
+        help="number of epochs to train (default: 14)",
+    )
+    parser.add_argument(
+        "--lr",
+        type=float,
+        default=1.0,
+        metavar="LR",
+        help="learning rate (default: 1.0)",
+    )
+    parser.add_argument(
+        "--gamma",
+        type=float,
+        default=0.7,
+        metavar="M",
+        help="Learning rate step gamma (default: 0.7)",
+    )
+    parser.add_argument(
+        "--no-cuda", action="store_true", default=False, help="disables CUDA training"
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        default=False,
+        help="quickly check a single pass",
+    )
+    parser.add_argument(
+        "--seed", type=int, default=1, metavar="S", help="random seed (default: 1)"
+    )
+    parser.add_argument(
+        "--log-interval",
+        type=int,
+        default=10,
+        metavar="N",
+        help="how many batches to wait before logging training status",
+    )
+    parser.add_argument(
+        "--save-model",
+        action="store_true",
+        default=False,
+        help="For Saving the current Model",
+    )
+    parser.add_argument(
+        "--what-if",
+        action="store_true",
+        default=False,
+    )
     args = parser.parse_args()
+
+    if args.what_if:
+        model = Net()
+        summary(model, (1, 28, 28), device="cpu")
+        return
+
     use_cuda = not args.no_cuda and torch.cuda.is_available()
 
     torch.manual_seed(args.seed)
 
     device = torch.device("cuda" if use_cuda else "cpu")
+    model = Net().to(device)
 
-    train_kwargs = {'batch_size': args.batch_size}
-    test_kwargs = {'batch_size': args.test_batch_size}
+    train_kwargs = {"batch_size": args.batch_size}
+    test_kwargs = {"batch_size": args.test_batch_size}
     if use_cuda:
-        cuda_kwargs = {'num_workers': 1,
-                       'pin_memory': True,
-                       'shuffle': True}
+        cuda_kwargs = {"num_workers": 1, "pin_memory": True, "shuffle": True}
         train_kwargs.update(cuda_kwargs)
         test_kwargs.update(cuda_kwargs)
 
-    # 数据处理，转换tensor， 归一化
-    transform=transforms.Compose([
-        transforms.ToTensor(),
-        transforms.Normalize((0.1307,), (0.3081,))
-        ])
-    
-    # '../data' 为数据的存放路径
-    dataset1 = datasets.MNIST('../data', train=True, download=True,
-                       transform=transform)
-    dataset2 = datasets.MNIST('../data', train=False,
-                       transform=transform)
-    train_loader = torch.utils.data.DataLoader(dataset1,**train_kwargs)
+    transform = transforms.Compose(
+        [transforms.ToTensor(), transforms.Normalize((0.1307,), (0.3081,))]
+    )
+
+    dataset1 = datasets.MNIST("./data", train=True, download=True, transform=transform)
+    dataset2 = datasets.MNIST("./data", train=False, transform=transform)
+    train_loader = torch.utils.data.DataLoader(dataset1, **train_kwargs)
     test_loader = torch.utils.data.DataLoader(dataset2, **test_kwargs)
 
-    model = Net().to(device)
     optimizer = optim.Adadelta(model.parameters(), lr=args.lr)
 
     scheduler = StepLR(optimizer, step_size=1, gamma=args.gamma)
@@ -163,5 +234,5 @@ def main():
         torch.save(model.state_dict(), "mnist_cnn.pt")
 
 
-if __name__ == '__main__':
-    main()   # 执行入口函数
+if __name__ == "__main__":
+    main()
