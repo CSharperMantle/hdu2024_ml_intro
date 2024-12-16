@@ -1,11 +1,13 @@
 import argparse
+import json
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
-from torchvision import datasets, transforms
 from torch.optim.lr_scheduler import StepLR
 from torchsummary import summary
+from torchvision import datasets, transforms
 
 
 class SEBlock(nn.Module):
@@ -28,7 +30,7 @@ class SEBlock(nn.Module):
         k = F.sigmoid(k)
         k = k.permute(0, 3, 1, 2)
         k = F.interpolate(k, (self.h, self.w), mode="nearest")
-        return x * k
+        return k * x
 
 
 class Net(nn.Module):
@@ -122,10 +124,15 @@ def test(model, device, test_loader):
             100.0 * correct / len(test_loader.dataset),
         )
     )
+    return {
+        "test_loss": test_loss,
+        "n_correct": correct,
+        "n_total": len(test_loader.dataset),
+        "acc": correct / len(test_loader.dataset),
+    }
 
 
 def main():
-
     parser = argparse.ArgumentParser(description="PyTorch MNIST Example")
     parser.add_argument(
         "--batch-size",
@@ -223,15 +230,19 @@ def main():
     test_loader = torch.utils.data.DataLoader(dataset2, **test_kwargs)
 
     optimizer = optim.Adadelta(model.parameters(), lr=args.lr)
-
     scheduler = StepLR(optimizer, step_size=1, gamma=args.gamma)
+
+    records: dict[int, dict] = {}
     for epoch in range(1, args.epochs + 1):
         train(args, model, device, train_loader, optimizer, epoch)
-        test(model, device, test_loader)
+        r = test(model, device, test_loader)
         scheduler.step()
+        records[epoch] = r
 
     if args.save_model:
         torch.save(model.state_dict(), "mnist_cnn.pt")
+
+    print(json.dumps(records, indent=2))
 
 
 if __name__ == "__main__":
