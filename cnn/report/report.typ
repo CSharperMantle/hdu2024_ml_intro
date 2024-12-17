@@ -78,6 +78,9 @@ Training very deep convolutional networks is considered challenging for both slo
 == Feature recalibration
 Convolutional networks capture features of input at different levels of abstraction, providing both spatial correlations and invariance through the use of a single kernel for each feature channel. However, this model of computation does not address potential relationships between different feature channels. Squeeze-and-Excitation modules (SE blocks) #cite(label("DBLP:journals/corr/abs-1709-01507")) explicitly model these inter-feature correlations with low overhead by first "squeezing" each feature channel map into a scalar with global average pooling, then "exciting" these features with a per-channel coefficient $bold(k)$ calculated using two fully-connected layers. By calculating $accent(bold(x), tilde) = bold(k)(bold(x); bold(#sym.theta)) #sym.dot.circle bold(x)$, where $#sym.dot.circle$ stands for Hadamard product, SE blocks emphasize the important channels and suppress less important ones, thus recalibrating across feature maps.
 
+== Code availability
+The source code for this task is available at #link("https://github.com/CSharperMantle/hdu2024_ml_intro").
+
 = Method
 
 == Anatomy of handout code
@@ -89,7 +92,12 @@ We implement all network enhancements in PyTorch. We keep the optimizing algorit
 As per #cite(label("DBLP:journals/corr/abs-1709-01507")), SE blocks learn to attend to important channels by optimizing on a per-channel factor. This is done by implementing a fully-connected, single-layer autoencoder operating on the global average of each feature map. However, in PyTorch, the fully-connected (`torch.nn.Linear`) layer only operates on the last dimension of the input tensor. Therefore, after obtaining the feature map average in space $RR^(N_B #sym.times C #sym.times 1 #sym.times 1)$, we either permute the dimensions into $RR^(N_B #sym.times 1 #sym.times 1 #sym.times C)$ or squeeze out the last two dimensions, making it $RR^(N_B #sym.times C)$. In @code-se-block, we choose the former approach to implement a generic SE block in our network.
 
 #figure([
-  #codly(languages: codly-languages, zebra-fill: none)
+  #codly(
+    languages: codly-languages,
+    zebra-fill: none,
+    smart-indent: true,
+    inset: 0.20em
+  )
   ```python
   class SEBlock(nn.Module):
       def __init__(self, h: int, w: int, c: int, r: int):
@@ -134,23 +142,29 @@ We train both our network and the handout baseline network for 30 epochs, record
   ]
 ) <fig-result-acc>
 
-We measure the run time of both scripts for 30 epochs. This measurement involves training time, evaluation time, and time spent on other auxiliary operations. We present the timing result alongside the performance metrics stated above in @table-result-comp, from which we can see that our model outperforms the baseline at a comparatively low time overhead.
+We also compare the runtime cost of two models, statically and dynamically. For the static cost, we use Torchinfo #cite(label("TorchinfoGitHub2020")) to calculate the parameter count of each network. For the dynamic cost, we measure the time elapsed running each script for 30 epochs, which includes training, evaluation, and time spent on other auxiliary operations. We present these results alongside the accuracy metrics in @table-result-comp, from which we can see that our model outperforms the baseline at a comparatively low runtime overhead.
 
-#figure(
-  table(
-    columns: 4,
-    stroke: none,
-    table.hline(stroke: 0.08em),
-    table.header([Network], [NLL loss], [Accuracy], [Training time (s)]),
-    table.hline(stroke: 0.05em),
-    [Baseline], [#num(0.020182653331756593, round: (mode: "places", precision: (6)))], [#num(0.994)], [*#num(278.0604258, round: (mode: "places", precision: (3)))*],
-    [Ours], [*#num(0.0161860077857971, round: (mode: "places", precision: (6)))*], [*#num(0.9956)*], [#num(712.96537, round: (mode: "places", precision: (3)))],
-    table.hline(stroke: 0.08em)
-  ),
-  caption: [
-    Performance metrics of networks at epoch 30. The winner of each metric is bolded.
-  ]
-) <table-result-comp>
+#place(
+  auto,
+  scope: "parent",
+  float: true
+)[
+  #figure(
+    table(
+      columns: 5,
+      stroke: none,
+      table.hline(stroke: 0.08em),
+      table.header([Network], [NLL Loss], [Accuracy], [Run Time (s)], [#sym.hash Params]),
+      table.hline(stroke: 0.05em),
+      [Baseline], [#num(0.020182653331756593, round: (mode: "places", precision: (6)))], [#num(0.994)], [*#num(278.0604258, round: (mode: "places", precision: (3)))*], [*#num(1048394)*],
+      [Ours], [*#num(0.0161860077857971, round: (mode: "places", precision: (6)))*], [*#num(0.9956)*], [#num(712.96537, round: (mode: "places", precision: (3)))], [#num(4511658)],
+      table.hline(stroke: 0.08em)
+    ),
+    caption: [
+      Performance metrics of networks. "NLL Loss" and "Accuracy" are measured at epoch 30; "Run Time" is measured for 30 epochs. The winner of each metric is bolded.
+    ]
+  ) <table-result-comp>
+]
 
 == Ablation study
 We evaluate the effectiveness of structures introduced into the network in our experiments by ablating modules and then comparing the loss of these ablated networks. As depicted in @fig-ablation-loss, an all-ablated network performs the worst in terms of convergence speed and plateaued loss. When ablated of SE blocks only, the network suffers from a high plateaued loss similar to that of a double-ablated network. When ablated of residual connections only, the plateaued loss of network is not affected, and the model even _benefits_ from this change as it converges faster. Surprisingly, if we compare a no-SE network and a no-SE-, no-Res network, we do observe that skip connections aid the network convergence.

@@ -6,7 +6,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 from torch.optim.lr_scheduler import StepLR
-from torchsummary import summary
+from torchinfo import summary
 from torchvision import datasets, transforms
 
 
@@ -203,7 +203,7 @@ def main():
 
     if args.what_if:
         model = Net()
-        summary(model, (1, 28, 28), device="cpu")
+        summary(model, (1, 1, 28, 28), device="cpu")
         return
 
     use_cuda = not args.no_cuda and torch.cuda.is_available()
